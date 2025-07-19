@@ -236,23 +236,29 @@ def train_all_models(
                 # Use the flexible KernelExplainer for all other models (like Stacking or Logistic Regression)
                 else:
                     logger.info("Using shap.KernelExplainer for the best model.")
-                    # Use shap.sample to get a representative background dataset, which is better than .head()
                     background_data = shap.sample(X_train_enc_df, 100)
+                    
+                    # --- OPTIMIZATION ---
+                    # To speed up KernelExplainer, we calculate SHAP values on a smaller sample of the test data.
+                    # This provides a very good approximation of feature importance much faster.
+                    test_data_sample = shap.sample(X_test_enc_df, 50)
+                    #logger.info(f"Calculating KernelExplainer SHAP values on a sample of 50 test data points for speed.")
+                    
                     explainer = shap.KernelExplainer(best_model_object.predict_proba, background_data)
-                    shap_values = explainer.shap_values(X_test_enc_df)
+                    shap_values = explainer.shap_values(test_data_sample)
+                    # --- END OF OPTIMIZATION ---
                 
-                # For binary classification, SHAP often returns a list [shap_for_class_0, shap_for_class_1]
-                # We are interested in the explanation for the positive class (class 1)
                 shap_values_for_plot = shap_values[1] if isinstance(shap_values, list) else shap_values
 
-                # Create and save the summary plot
-                shap.summary_plot(shap_values_for_plot, X_test_enc_df, plot_type="bar", show=False)
+                # Use the correct data for plotting based on whether we sampled
+                plot_data = test_data_sample if 'test_data_sample' in locals() else X_test_enc_df
+                
+                shap.summary_plot(shap_values_for_plot, plot_data, plot_type="bar", show=False)
                 
                 plot_path = "outputs/shap_summary_plot.png"
                 plt.savefig(plot_path, bbox_inches='tight')
                 plt.close()
                 
-                # Log the plot as an artifact to the main parent run
                 mlflow.log_artifact(plot_path, "explainability")
                 logger.info(f"✅ SHAP summary plot saved and logged to MLflow artifacts under 'explainability'.")
 
