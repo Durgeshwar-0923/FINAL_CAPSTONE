@@ -70,7 +70,7 @@ def log_stage(df_before, df_after, step_name):
     if cols_before != cols_after:
         logger.info(f"📉 {cols_before - cols_after} features removed at step '{step_name}'")
 
-def run_preprocessing_pipeline(df: pd.DataFrame, target_col: str = 'Converted', is_training: bool = True):
+def run_preprocessing_pipeline(df: pd.DataFrame, target_col: str = 'converted', is_training: bool = True):
     run_id = f"preproc_{'train' if is_training else 'infer'}"
     target_series = df[target_col].copy() if (target_col in df.columns and is_training) else None
 
@@ -193,7 +193,7 @@ def run_preprocessing_pipeline(df: pd.DataFrame, target_col: str = 'Converted', 
     return df
 
 
-def run_pipeline_with_tracking(raw_data_path: str = 'data/raw/Lead Scoring.csv', target_col: str = 'Converted', is_training: bool = True):
+def run_pipeline_with_tracking(raw_data_path: str = 'data/raw/Lead Scoring.csv', target_col: str = 'converted', is_training: bool = True):
     if not os.path.exists(raw_data_path):
         logger.error(f"Raw data path not found: {raw_data_path}")
         return
@@ -206,7 +206,7 @@ def main(raw_path='data/raw/Lead Scoring.csv'):
         logger.error(f"Raw data missing: {raw_path}")
         return
     df_raw = pd.read_csv(raw_path)
-    df_processed = run_preprocessing_pipeline(df_raw, target_col='Converted', is_training=True)
+    df_processed = run_preprocessing_pipeline(df_raw, target_col='converted', is_training=True)
     df_processed.to_csv('data/processed/processed_data.csv', index=False)
     logger.info("Processed data saved.")
 

@@ -1,0 +1,19 @@
+# Redshift Secret
+REDSHIFT_SECRET_ID=glue!439932142398-Redshiftconnection-1752905301534
+REDSHIFT_HOST=capstoneminfy.439932142398.ap-south-1.redshift-serverless.amazonaws.com
+REDSHIFT_DB_NAME=dev
+REDSHIFT_USER=admin
+
+
+
+# PostgreSQL fallback (retained as comments in config.py)
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=Lead_db
+DB_USER=postgres
+DB_PASS=Minfy
+
+# SageMaker MLfloww
+MLFLOW_TRACKING_ARN=ap-south-1:439932142398:mlflow-tracking-server/capstonetracking
+MLFLOW_S3_ARTIFACT_PATH=s3://mlflow-capstone-artifacts/ML_FLOW_EXPERIMENTS/
+

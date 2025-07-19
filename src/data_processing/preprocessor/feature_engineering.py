@@ -88,7 +88,7 @@ class FeatureEngineeringTransformer(BaseEstimator, TransformerMixin):
         return df
 
 
-def compute_and_save_shap_importance(df: pd.DataFrame, target_col='Converted', top_k=50):
+def compute_and_save_shap_importance(df: pd.DataFrame, target_col='converted', top_k=50):
     """
     Compute SHAP feature importance using XGBoost classifier.
     Imputes missing numeric features before training.
@@ -153,7 +153,7 @@ def compute_and_save_shap_importance(df: pd.DataFrame, target_col='Converted', t
     logger.info(f"💾 Saved SHAP CSV to {SHAP_CSV_PATH}")
 
 
-def compute_permutation_importance(df: pd.DataFrame, target_col: str = 'Converted', n_repeats: int = 10, random_state: int = 42):
+def compute_permutation_importance(df: pd.DataFrame, target_col: str = 'converted', n_repeats: int = 10, random_state: int = 42):
     """
     Compute permutation importance to estimate generalizable impact of each feature.
     More robust than SHAP for non-tree models.

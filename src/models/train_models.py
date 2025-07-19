@@ -21,6 +21,7 @@ except Exception:
     pass
 
 import matplotlib
+import matplotlib.pyplot as plt
 matplotlib.use("Agg")
 
 _temp_dir = tempfile.mkdtemp()
@@ -38,6 +39,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import joblib
+import shap # --- ADDITION: Import SHAP ---
 from mlflow.tracking import MlflowClient
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
@@ -63,7 +65,6 @@ from src.monitoring.drift_detector import log_drift_report
 logger = setup_logger(__name__)
 console = Console()
 client = MlflowClient()
-mlflow.set_experiment("Lead_Conversion_Modeling")
 
 for d in ["artifacts", "drift_reports", "outputs", "catboost_logs"]:
     os.makedirs(d, exist_ok=True)
@@ -109,8 +110,10 @@ def train_all_models(
     test_size: float = 0.2,
     timeout: int = 600,
     cv=5,
-    n_trials: int = 20
+    n_trials: int = 15
 ):
+    mlflow.set_experiment(experiment_name)
+    
     df = pd.read_csv(data_path)
     logger.info(f"Loaded processed data: {df.shape}")
 
@@ -122,31 +125,19 @@ def train_all_models(
         X, y, test_size=test_size, stratify=y, random_state=42
     )
 
-    # --- 👇 CHANGE MADE HERE ---
-    # Robust FIX for FloatingPointError:
-    # The drift detector fails if any numeric column has zero variance (is a constant).
-    # This can happen in either the train or test set after a split.
-    # This fix ensures we only pass columns that have variance in BOTH sets.
-    logger.info("Filtering columns for drift detection to avoid zero-variance error...")
-    
-    # 1. Isolate numeric columns from both sets
-    X_train_numeric = X_train.select_dtypes(include=np.number)
-    X_test_numeric = X_test.select_dtypes(include=np.number)
-    
-    # 2. Find columns with variance (>0 standard deviation) in each set
-    train_variant_cols = X_train_numeric.columns[X_train_numeric.std() > 0]
-    test_variant_cols = X_test_numeric.columns[X_test_numeric.std() > 0]
-    
-    # 3. The safe columns are the intersection of the two sets
-    safe_numeric_cols = train_variant_cols.intersection(test_variant_cols)
-    
-    # 4. Reconstruct the full dataframes (numeric + categorical) using only the safe numeric columns
-    X_train_drift = pd.concat([X_train[safe_numeric_cols], X_train.select_dtypes(exclude=np.number)], axis=1)
-    X_test_drift = pd.concat([X_test[safe_numeric_cols], X_test.select_dtypes(exclude=np.number)], axis=1)
-    
-    logger.info(f"Passing {X_train_drift.shape[1]} columns to drift detector.")
-    log_drift_report(X_train_drift, X_test_drift, dataset_name="train_vs_test")
-    # --- END OF CHANGE ---
+    try:
+        logger.info("Filtering columns for drift detection to avoid zero-variance error...")
+        X_train_numeric = X_train.select_dtypes(include=np.number)
+        X_test_numeric = X_test.select_dtypes(include=np.number)
+        train_variant_cols = X_train_numeric.columns[X_train_numeric.std() > 0]
+        test_variant_cols = X_test_numeric.columns[X_test_numeric.std() > 0]
+        safe_numeric_cols = train_variant_cols.intersection(test_variant_cols)
+        X_train_drift = pd.concat([X_train[safe_numeric_cols], X_train.select_dtypes(exclude=np.number)], axis=1)
+        X_test_drift = pd.concat([X_test[safe_numeric_cols], X_test.select_dtypes(exclude=np.number)], axis=1)
+        logger.info(f"Passing {X_train_drift.shape[1]} columns to drift detector.")
+        log_drift_report(X_train_drift, X_test_drift, dataset_name="train_vs_test")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not perform drift detection. Error: {e}")
 
     cat_cols = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
     encoder = TargetEncoderWrapper(cols_to_encode=cat_cols)
@@ -157,90 +148,150 @@ def train_all_models(
     logger.info(f"💾 Saved final target encoder to artifacts/final_target_encoder.joblib")
 
     scaler = StandardScaler().fit(X_train_enc)
-    X_train_enc = scaler.transform(X_train_enc)
-    X_test_enc = scaler.transform(X_test_enc)
+    X_train_enc_df = pd.DataFrame(scaler.transform(X_train_enc), columns=X_train_enc.columns)
+    X_test_enc_df = pd.DataFrame(scaler.transform(X_test_enc), columns=X_test_enc.columns)
     joblib.dump(scaler, "artifacts/feature_scaler.pkl")
 
     results, models = [], []
-    best_auc, best_model, best_run_id = 0.0, None, None
+    best_auc, best_model_name, best_run_id = 0.0, None, None
+    best_model_object = None # To store the actual best model for SHAP
 
     with safe_start_run("All_Model_Training") as main_run:
         for name, Cls in CLASSIFIERS.items():
-            mlflow.set_tag("model_name", name)
-            params = optimize_model(Cls, TUNING_SPACE[name], X_train_enc, y_train, n_trials=n_trials)
-            model = Cls(**params)
-            model.fit(X_train_enc, y_train)
-            preds = model.predict(X_test_enc)
-            probs = model.predict_proba(X_test_enc)[:, 1]
+            with mlflow.start_run(run_name=name, nested=True) as nested_run:
+                params = optimize_model(Cls, TUNING_SPACE[name], X_train_enc_df, y_train, n_trials=n_trials)
+                
+                if name == "CatBoost":
+                    params['verbose'] = 0
+                
+                model = Cls(**params)
+                model.fit(X_train_enc_df, y_train)
+                preds = model.predict(X_test_enc_df)
+                probs = model.predict_proba(X_test_enc_df)[:, 1]
 
-            metrics = {
+                metrics = {
+                    "accuracy": accuracy_score(y_test, preds),
+                    "precision": precision_score(y_test, preds),
+                    "recall": recall_score(y_test, preds),
+                    "roc_auc": roc_auc_score(y_test, probs),
+                }
+                
+                mlflow.log_params(params)
+                mlflow.log_metrics(metrics)
+                
+                input_example = X_train_enc_df.head(5)
+                mlflow.sklearn.log_model(model, name, input_example=input_example)
+
+                if metrics["roc_auc"] > best_auc:
+                    best_auc = metrics["roc_auc"]
+                    best_model_name = name
+                    best_run_id = nested_run.info.run_id
+                    best_model_object = model # Save the best model object
+
+                results.append({"model": name, **metrics})
+                models.append((name, model))
+
+        with mlflow.start_run(run_name="StackingEnsemble", nested=True) as stack_run:
+            stack = StackingClassifier(
+                estimators=models,
+                final_estimator=LogisticRegression(),
+                cv=StratifiedKFold(5),
+                n_jobs=1,
+                passthrough=True
+            )
+            
+            stack.fit(X_train_enc_df, y_train)
+            preds = stack.predict(X_test_enc_df)
+            probs = stack.predict_proba(X_test_enc_df)[:, 1]
+
+            stack_metrics = {
                 "accuracy": accuracy_score(y_test, preds),
                 "precision": precision_score(y_test, preds),
                 "recall": recall_score(y_test, preds),
                 "roc_auc": roc_auc_score(y_test, probs),
             }
+            
+            mlflow.log_metrics(stack_metrics)
+            
+            input_example = X_train_enc_df.head(5)
+            mlflow.sklearn.log_model(stack, "StackingEnsemble", input_example=input_example)
 
-            mlflow.log_params({f"{name}_{k}": v for k, v in params.items()})
-            mlflow.log_metrics({f"{name}_{k}": v for k, v in metrics.items()})
-            mlflow.sklearn.log_model(model, f"models/{name}")
+            if stack_metrics["roc_auc"] > best_auc:
+                best_model_name = "StackingEnsemble"
+                best_run_id = stack_run.info.run_id
+                best_model_object = stack # Save the best model object
 
-            if metrics["roc_auc"] > best_auc:
-                best_auc = metrics["roc_auc"]
-                best_model = model
-                best_run_id = main_run.info.run_id
+            results.append({"model": "StackingEnsemble", **stack_metrics})
 
-            results.append({"model": name, **metrics})
-            models.append((name, model))
+        # --- CHANGE MADE HERE: Enhanced SHAP Explainability Logic ---
+        if best_model_object:
+            logger.info(f"Calculating SHAP values for the best model: {best_model_name}")
+            try:
+                explainer = None
+                # Use the fast TreeExplainer for supported models
+                if isinstance(best_model_object, (RandomForestClassifier, XGBClassifier, LGBMClassifier, GradientBoostingClassifier, CatBoostClassifier)):
+                    logger.info("Using shap.TreeExplainer for the best model.")
+                    explainer = shap.TreeExplainer(best_model_object, X_train_enc_df)
+                    shap_values = explainer.shap_values(X_test_enc_df)
+                # Use the flexible KernelExplainer for all other models (like Stacking or Logistic Regression)
+                else:
+                    logger.info("Using shap.KernelExplainer for the best model.")
+                    # Use shap.sample to get a representative background dataset, which is better than .head()
+                    background_data = shap.sample(X_train_enc_df, 100)
+                    explainer = shap.KernelExplainer(best_model_object.predict_proba, background_data)
+                    shap_values = explainer.shap_values(X_test_enc_df)
+                
+                # For binary classification, SHAP often returns a list [shap_for_class_0, shap_for_class_1]
+                # We are interested in the explanation for the positive class (class 1)
+                shap_values_for_plot = shap_values[1] if isinstance(shap_values, list) else shap_values
 
-        # ─── Train Stacking Model ─────────────────────────────
-        stack = StackingClassifier(
-            estimators=models,
-            final_estimator=LogisticRegression(),
-            cv=StratifiedKFold(5),
-            n_jobs=1,
-            passthrough=True
+                # Create and save the summary plot
+                shap.summary_plot(shap_values_for_plot, X_test_enc_df, plot_type="bar", show=False)
+                
+                plot_path = "outputs/shap_summary_plot.png"
+                plt.savefig(plot_path, bbox_inches='tight')
+                plt.close()
+                
+                # Log the plot as an artifact to the main parent run
+                mlflow.log_artifact(plot_path, "explainability")
+                logger.info(f"✅ SHAP summary plot saved and logged to MLflow artifacts under 'explainability'.")
+
+            except Exception as e:
+                logger.warning(f"⚠️ Could not generate SHAP plot. Error: {e}")
+        # --- END OF CHANGE ---
+
+    if best_model_name is not None and best_run_id is not None:
+        model_name_in_registry = "LeadConversionModel"
+        logger.info(f"Registering best model '{best_model_name}' as '{model_name_in_registry}'")
+        
+        run_model_uri = f"runs:/{best_run_id}/{best_model_name}"
+        mv = mlflow.register_model(run_model_uri, model_name_in_registry)
+        logger.info(f"Successfully registered model version {mv.version}.")
+
+        client.set_registered_model_alias(
+            name=model_name_in_registry,
+            alias="champion",
+            version=mv.version
         )
-        stack.fit(X_train_enc, y_train)
-        preds = stack.predict(X_test_enc)
-        probs = stack.predict_proba(X_test_enc)[:, 1]
+        logger.info(f"Set alias 'champion' for version {mv.version}.")
 
-        metrics = {
-            "accuracy": accuracy_score(y_test, preds),
-            "precision": precision_score(y_test, preds),
-            "recall": recall_score(y_test, preds),
-            "roc_auc": roc_auc_score(y_test, probs),
-        }
-
-        mlflow.log_metrics({f"Stacking_{k}": v for k, v in metrics.items()})
-        mlflow.sklearn.log_model(stack, "models/StackingEnsemble")
-        mlflow.set_tag("model_name", "StackingEnsemble")
-
-        if metrics["roc_auc"] > best_auc:
-            best_model = stack
-            best_run_id = main_run.info.run_id
-
-        results.append({"model": "StackingEnsemble", **metrics})
-
-    # ─── Register Best Model & Archive Old ─────────────────────────────
-    if best_model is not None and best_run_id is not None:
-        run_model_uri = f"runs:/{best_run_id}/models/{'StackingEnsemble' if isinstance(best_model, StackingClassifier) else name}"
-        mv = mlflow.register_model(run_model_uri, "LeadConversionModel")
-
-        for mv_existing in client.search_model_versions(f"name='LeadConversionModel'"):
-            if mv_existing.current_stage == "Production" and int(mv_existing.version) != int(mv.version):
+        for mv_existing in client.search_model_versions(f"name='{model_name_in_registry}'"):
+            if mv_existing.current_stage == "Production" and mv_existing.version != mv.version:
+                logger.info(f"Archiving old production model version: {mv_existing.version}")
                 client.transition_model_version_stage(
-                    name=mv_existing.name,
+                    name=model_name_in_registry,
                     version=mv_existing.version,
                     stage="Archived"
                 )
 
+        logger.info(f"Transitioning new model version {mv.version} to 'Production'.")
         client.transition_model_version_stage(
-            name="LeadConversionModel",
+            name=model_name_in_registry,
             version=mv.version,
             stage="Production"
         )
+        logger.info("✅ Model registration and promotion complete.")
 
-    # ─── Results Table ─────────────────────────────
     df_res = pd.DataFrame(results)
     table = Table(title="Model Comparison")
     table.add_column("Model", style="bold")
@@ -254,4 +305,4 @@ def train_all_models(
     print("\n✅ Final Model Metrics Summary:")
     print(df_res.to_string(index=False))
 
-    return best_model
+    return best_model_name

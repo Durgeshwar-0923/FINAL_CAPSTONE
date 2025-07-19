@@ -1,5 +1,6 @@
 # src/utils/metrics.py
 import numpy as np
+import mlflow  # ← Added for MLflow integration
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -58,4 +59,16 @@ def classification_report_dict(y_true, y_pred, y_prob=None):
             metrics_dict["roc_auc"] = None
 
     metrics_dict["classification_report"] = report
+
+    # MLflow logging block (added without affecting original logic)
+    mlflow.log_metrics({
+        "accuracy": metrics_dict["accuracy"],
+        "precision": metrics_dict["precision"],
+        "recall": metrics_dict["recall"],
+        "f1_score": metrics_dict["f1_score"],
+    })
+
+    if "roc_auc" in metrics_dict and metrics_dict["roc_auc"] is not None:
+        mlflow.log_metric("roc_auc", metrics_dict["roc_auc"])
+
     return metrics_dict

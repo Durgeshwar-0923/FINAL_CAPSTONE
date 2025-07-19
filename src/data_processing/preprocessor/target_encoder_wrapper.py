@@ -73,7 +73,7 @@ class TargetEncoderWrapper:
 
 def apply_target_encoding(
     df: pd.DataFrame,
-    target_col: str = 'Converted',
+    target_col: str = 'converted',
     is_training: bool = True
 ) -> pd.DataFrame:
     """
