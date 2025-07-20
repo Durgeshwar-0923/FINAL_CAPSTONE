@@ -34,6 +34,14 @@ except ImportError:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
 
+# --- FIX FOR SAGEMAKER MLFLOW URI ---
+# Explicitly set the tracking URI for the SageMaker environment
+if "SAGEMAKER_INTERNAL_NOTEBOOK_ARN" in os.environ:
+    MLFLOW_TRACKING_ARN = "arn:aws:sagemaker:ap-south-1:439932142398:mlflow-tracking-server/sagemaker"
+    os.environ["MLFLOW_TRACKING_URI"] = MLFLOW_TRACKING_ARN
+    logger.info(f"SageMaker environment detected. Setting MLflow tracking URI to: {MLFLOW_TRACKING_ARN}")
+# --- END OF FIX ---
+
 mlflow.set_experiment("Lead_Conversion_Preprocessing_Boosted")
 
 OUTPUT_DIRS = [

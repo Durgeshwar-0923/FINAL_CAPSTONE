@@ -1,0 +1,27 @@
+# Web server
+flask==2.2.5
+gunicorn
+gevent
+
+# Core Libraries for Preprocessing & Prediction
+pandas==2.0.3
+scikit-learn==1.2.2
+numpy==1.23.5
+joblib==1.2.0
+
+# AWS Libraries
+boto3
+
+# Pinned Model Dependencies (to avoid warnings and ensure reproducibility)
+mlflow==2.8.0
+cloudpickle==2.2.1
+packaging==23.2
+psutil==5.9.8
+matplotlib==3.7.1
+scipy==1.10.1
+
+# Libraries needed to LOAD the saved StackingEnsemble model object
+xgboost==1.7.6
+lightgbm==4.1.0
+catboost==1.2.3
+category-encoders==2.6.2

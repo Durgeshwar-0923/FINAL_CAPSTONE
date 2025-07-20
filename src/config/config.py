@@ -98,13 +98,13 @@ class MLOpsConfig:
     # ✅ Set to the SageMaker-hosted MLflow Tracking URI (ARN format for SageMaker)
     mlflow_tracking_uri: str = os.getenv(
         "MLFLOW_TRACKING_URI",
-        "https://t-ifcgkwdbncdu.ap-south-1.experiments.sagemaker.aws"  # Replace with actual URL if needed
+        "https://t-egcu1qkoqhtg.ap-south-1.experiments.sagemaker.aws"  # Replace with actual URL if needed
     )
     
     # ✅ Artifact storage location in S3
     mlflow_artifact_uri: str = os.getenv(
         "MLFLOW_ARTIFACT_URI",
-        "s3://mlflow-capstone-artifacts/ML_FLOW_EXPERIMENTS/"
+        "s3://mlflowminfycapstone/Artifacts/"
     )
 
     # ✅ Optional DAG folder path for Airflow
