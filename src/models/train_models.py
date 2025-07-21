@@ -49,7 +49,7 @@ LOCAL_ARTIFACTS_PATH = os.path.join(PROJECT_ROOT, "artifacts")
 STAGING_DIR = "staging"
 MODEL_ARTIFACT_BUNDLE = "model.tar.gz"
 
-MLFLOW_TRACKING_ARN = "arn:aws:sagemaker:ap-south-1:439932142398:mlflow-tracking-server/capstonetracking"
+MLFLOW_TRACKING_ARN = ""
 os.environ["MLFLOW_TRACKING_URI"] = MLFLOW_TRACKING_ARN
 os.environ["MLFLOW_S3_ENDPOINT_URL"] = "https://s3.ap-south-1.amazonaws.com"
 
