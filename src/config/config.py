@@ -71,7 +71,7 @@ class DatabaseConfig:
     port: int = int(os.getenv("DB_PORT", 5432))
     database: str = os.getenv("DB_NAME", "Lead_db")
     user: str = os.getenv("DB_USER", "postgres")
-    password: str = os.getenv("DB_PASS", "Minfy")
+    password: str = os.getenv("DB_PASS", "")
     schema_name: str = "public"
     table_name: str = "Lead_data"
 
@@ -98,13 +98,13 @@ class MLOpsConfig:
     # ✅ Set to the SageMaker-hosted MLflow Tracking URI (ARN format for SageMaker)
     mlflow_tracking_uri: str = os.getenv(
         "MLFLOW_TRACKING_URI",
-        "https://t-egcu1qkoqhtg.ap-south-1.experiments.sagemaker.aws"  # Replace with actual URL if needed
+        ""  # Replace with actual URL if needed
     )
     
     # ✅ Artifact storage location in S3
     mlflow_artifact_uri: str = os.getenv(
         "MLFLOW_ARTIFACT_URI",
-        "s3://mlflowminfycapstone/Artifacts/"
+        ""
     )
 
     # ✅ Optional DAG folder path for Airflow
