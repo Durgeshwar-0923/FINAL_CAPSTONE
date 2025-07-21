@@ -1,91 +1,132 @@
 """
 Module: src/api/app.py
-Description: Main Flask application file. Handles HTTP requests, file uploads,
-             and orchestrates the prediction process by calling the prediction_service.
+Description: This is the FRONT-END Flask application. It serves the user interface,
+             saves incoming data to S3, calls the deployed SageMaker endpoint
+             to get predictions, and displays the results.
 """
 import os
 import uuid
 import pandas as pd
-from flask import Flask, request, render_template, send_file, flash, redirect, url_for
-from werkzeug.utils import secure_filename
+import flask
+import boto3
+import json
+from datetime import datetime
 
-# --- Custom Service Imports ---
-from src.api.prediction_service import predict_probabilities, ALL_ARTIFACTS
+from werkzeug.utils import secure_filename
 from src.utils.logger import setup_logger
 
 # --- Initial Setup ---
 logger = setup_logger(__name__)
-app = Flask(__name__)
+app = flask.Flask(__name__, template_folder='templates')
 
-# --- FIX APPLIED HERE: Absolute Path Configuration ---
-# Get the absolute path of the project's root directory.
-# This ensures that no matter where the script is run from, the paths are always correct.
+# --- Configuration ---
+# This is the name of the live endpoint you deployed.
+ENDPOINT_NAME = "lead-conversion-predictor"
+# This should be the same region where you deployed your endpoint.
+AWS_REGION = "ap-south-1" 
+# --- NEW: S3 Bucket for Incoming Data ---
+# We will store a copy of all incoming prediction requests in this bucket.
+INFERENCE_DATA_S3_BUCKET = "flaskcapstonebucket" 
+
+# --- Path Configuration ---
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-
 UPLOAD_FOLDER = os.path.join(PROJECT_ROOT, "uploads")
 PRED_FOLDER = os.path.join(PROJECT_ROOT, "predictions")
 REFERENCE_DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw", "Lead Scoring.csv")
-# --- END OF FIX ---
 
 MODEL_NAME = os.getenv("MODEL_NAME", "LeadConversionModel")
 app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", "a_default_secret_key_for_development")
 
-# Create necessary directories at startup.
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PRED_FOLDER, exist_ok=True)
 
 
 @app.route("/")
 def home():
-    model_loaded = ALL_ARTIFACTS.get("model") is not None
-    if not model_loaded:
-        logger.error("Health Check FAILED: Model or artifacts could not be loaded.")
-        flash("Error: The prediction model or its artifacts could not be loaded. Please check the server logs.", "danger")
-    else:
-        logger.info("Health Check PASSED: Model and artifacts are loaded.")
-    return render_template("index.html", model_name=MODEL_NAME, model_loaded=model_loaded)
+    """Renders the main landing page (index.html)."""
+    return flask.render_template("index.html", model_name=MODEL_NAME, model_loaded=True)
 
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    if 'file' not in request.files:
-        flash("No file part in the request.", "warning")
-        return redirect(url_for('home'))
+    """
+    Handles the file upload, saves data to S3, calls the SageMaker endpoint,
+    and displays the results (result.html).
+    """
+    if 'file' not in flask.request.files:
+        flask.flash("No file part in the request.", "warning")
+        return flask.redirect(flask.url_for('home'))
 
-    file = request.files['file']
+    file = flask.request.files['file']
     if file.filename == '':
-        flash("No file selected for uploading.", "warning")
-        return redirect(url_for('home'))
+        flask.flash("No file selected for uploading.", "warning")
+        return flask.redirect(flask.url_for('home'))
 
     if file and file.filename.endswith('.csv'):
         filename = secure_filename(file.filename)
-        # The UPLOAD_FOLDER path is now absolute and correct.
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
-        logger.info(f"File '{filename}' uploaded successfully.")
-
+        
         try:
-            raw_df = pd.read_csv(file_path)
+            # Read the file content into memory to use it multiple times
+            file_content = file.read()
+            # Reset the file stream position so pandas can read it
+            file.stream.seek(0) 
+            
+            # --- ADDITION: Save Incoming Data to S3 ---
+            try:
+                s3_client = boto3.client("s3")
+                # Create a unique, date-partitioned path for the file
+                now = datetime.utcnow()
+                s3_key = f"incoming-data/year={now.year}/month={now.month:02d}/day={now.day:02d}/{uuid.uuid4()}_{filename}"
+                
+                s3_client.put_object(
+                    Bucket=INFERENCE_DATA_S3_BUCKET,
+                    Key=s3_key,
+                    Body=file_content
+                )
+                logger.info(f"✅ Successfully saved incoming data to s3://{INFERENCE_DATA_S3_BUCKET}/{s3_key}")
+            except Exception as s3_e:
+                # Log the error but do not stop the prediction
+                logger.warning(f"⚠️ WARNING: Failed to save incoming data to S3. Error: {s3_e}")
+            # --- END OF ADDITION ---
+
+            raw_df = pd.read_csv(file.stream)
             logger.info(f"Read {len(raw_df)} rows from the uploaded file.")
             
-            probabilities = predict_probabilities(raw_df)
+            # Convert the DataFrame to the JSON format the endpoint expects
+            payload = raw_df.to_json(orient="split")
+            
+            # Create a SageMaker client and invoke the endpoint
+            logger.info(f"Invoking SageMaker endpoint: {ENDPOINT_NAME}")
+            sagemaker_runtime = boto3.client("sagemaker-runtime", region_name=AWS_REGION)
+            response = sagemaker_runtime.invoke_endpoint(
+                EndpointName=ENDPOINT_NAME,
+                ContentType="application/json",
+                Body=payload
+            )
+            
+            # Parse the JSON response from the endpoint
+            response_body = response['Body'].read().decode('utf-8')
+            result = json.loads(response_body)
+            probabilities = result.get("probabilities", [])
 
+            # Add the results back to your original DataFrame for display
             results_df = raw_df.copy()
             results_df['Lead_Conversion_Probability'] = [f"{p:.2%}" for p in probabilities]
-            results_df['Lead_Converted_Prediction'] = (probabilities > 0.5).astype(int)
-            logger.info("Successfully generated predictions and probabilities.")
+            results_df['Lead_Converted_Prediction'] = (pd.Series(probabilities) > 0.5).astype(int)
+            logger.info("Successfully received and formatted predictions from SageMaker.")
 
+            # Save the final results to a local file
             result_id = uuid.uuid4().hex[:8]
             result_file = f"prediction_{result_id}_{filename}"
-            # The PRED_FOLDER path is now absolute and correct.
             result_path = os.path.join(PRED_FOLDER, result_file)
             results_df.to_csv(result_path, index=False)
             logger.info(f"Saved prediction results to '{result_path}'")
 
+            # Prepare data for rendering in the HTML template
             table_headers = results_df.columns.tolist()
             table_rows = results_df.head(100).values.tolist()
             
-            return render_template(
+            return flask.render_template(
                 "result.html",
                 table_headers=table_headers,
                 table_rows=table_rows,
@@ -96,30 +137,30 @@ def upload():
 
         except Exception as e:
             logger.error(f"An error occurred during prediction: {e}", exc_info=True)
-            flash(f"An error occurred during processing: {e}", "danger")
-            return redirect(url_for('home'))
+            flask.flash(f"An error occurred during processing: {e}", "danger")
+            return flask.redirect(flask.url_for('home'))
     else:
-        flash("Invalid file type. Please upload a CSV file.", "danger")
-        return redirect(url_for('home'))
+        flask.flash("Invalid file type. Please upload a CSV file.", "danger")
+        return flask.redirect(flask.url_for('home'))
 
 @app.route("/sample")
 def sample():
     logger.info("Providing sample data file for download.")
-    return send_file(REFERENCE_DATA_PATH, as_attachment=True)
+    return flask.send_file(REFERENCE_DATA_PATH, as_attachment=True)
 
 
 @app.route("/download/<filename>")
 def download(filename):
     logger.info(f"Processing download request for file: {filename}")
     safe_filename = secure_filename(filename)
-    # The PRED_FOLDER path is now absolute and correct.
     file_path = os.path.join(PRED_FOLDER, safe_filename)
     if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
+        return flask.send_file(file_path, as_attachment=True)
     else:
-        flash("File not found.", "danger")
-        return redirect(url_for('home'))
+        flask.flash("File not found.", "danger")
+        return flask.redirect(flask.url_for('home'))
 
 
 if __name__ == "__main__":
+    # This runs your local front-end application
     app.run(debug=True, port=int(os.getenv("PORT", 8000)))
